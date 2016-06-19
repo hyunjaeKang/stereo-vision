@@ -48,8 +48,11 @@ bool SFM::configure(ResourceFinder &rf)
     localCalibration.setDefaultConfigFile(SFMFile.c_str());
     localCalibration.configure(0,NULL);
 
-    this->camCalibFile=localCalibration.getHomeContextPath().c_str();
-    this->camCalibFile+="/"+SFMFile;
+    camCalibFile=localCalibration.getHomeContextPath().c_str();
+    camCalibFile+="/"+SFMFile;
+
+    eyesCalibFile=localCalibration.getHomeContextPath().c_str();
+    eyesCalibFile+="/calibrate-eyes.log";
 
     outMatchName=sname+outMatchName;
     outDispName=sname+outDispName;
@@ -574,7 +577,7 @@ bool SFM::loadIntrinsics(yarp::os::ResourceFinder &rf, Mat &KL, Mat &KR, Mat &Di
 
 /******************************************************************************/
 bool SFM::updateExtrinsics(Mat& Rot, Mat& Tr, yarp::sig::Vector& eyes,
-        const string& groupname)
+                           const string& groupname)
 {
     ofstream out;
     out.open(camCalibFile.c_str());
@@ -1120,7 +1123,7 @@ double SFM::calibrateEyes(const Bottle &options)
 
     yInfo()<<"Calibrating eyes...";
     Matrix extrinsics_left,extrinsics_right;
-    double cost=calibrator.calibrate(extrinsics_left,extrinsics_right);
+    double cost=calibrator.calibrate(extrinsics_left,extrinsics_right,eyesCalibFile);
     yInfo()<<"Final cost found: "<<cost;
 
     yInfo()<<"Pushing new extrinsics to gaze";
