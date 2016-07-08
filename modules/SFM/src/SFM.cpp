@@ -893,7 +893,7 @@ Vector SFM::calibrate(const Bottle &options)
     Vector ang_enc;
     igaze->getAngles(ang_enc);
 
-    Vector ang_cmd;
+    Vector ang_cmd=ang_enc;
     double &ver=ang_cmd[2];
 
     EyesCalibration calibrator;    
