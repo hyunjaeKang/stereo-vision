@@ -951,6 +951,7 @@ Vector SFM::calibrate(const Bottle &options)
     ver=verMin;
     yInfo()<<"Homing vergence to "<<ver<< " [deg]";    
     igaze->lookAtAbsAngles(ang);
+    igaze->waitMotionDone(1.0);
 
     yInfo()<<"Calibrating eyes...";
     Matrix extrinsics_left,extrinsics_right;
