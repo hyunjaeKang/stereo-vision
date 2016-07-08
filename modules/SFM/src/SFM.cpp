@@ -890,17 +890,20 @@ Vector SFM::calibrate(const Bottle &options)
 
     yInfo()<<"Acquiring data...";
 
-    Vector ang;    
-    igaze->getAngles(ang);
-    double &ver=ang[2];
+    Vector ang_enc;
+    igaze->getAngles(ang_enc);
+
+    Vector ang_cmd;
+    double &ver=ang_cmd[2];
 
     EyesCalibration calibrator;    
     for (ver=verMin; ver<=verMax; ver+=verStep)
     {
         yInfo()<<"Going to vergence "<<ver<< " [deg]...";
-        igaze->lookAtAbsAngles(ang);
+        igaze->lookAtAbsAngles(ang_cmd);
         igaze->waitMotionDone(1.0);
-        yInfo()<<"Target reached";
+        igaze->getAngles(ang_enc);
+        yInfo()<<"Target reached at vergence "<<ang_enc[2]<<" [deg]";
 
         int cntTot=1;
         int cntOk=1;
@@ -912,7 +915,7 @@ Vector SFM::calibrate(const Bottle &options)
             {
                 yInfo()<<"Calibration achieved successfully";
                 CalibrationData &data=calibrator.addData();
-                data.vergence=ver;
+                data.vergence=ang_enc[2];
 
                 Vector x,o;
                 igaze->getLeftEyePose(x,o);
@@ -950,7 +953,7 @@ Vector SFM::calibrate(const Bottle &options)
 
     ver=verMin;
     yInfo()<<"Homing vergence to "<<ver<< " [deg]";    
-    igaze->lookAtAbsAngles(ang);
+    igaze->lookAtAbsAngles(ang_cmd);
     igaze->waitMotionDone(1.0);
 
     yInfo()<<"Calibrating eyes...";
