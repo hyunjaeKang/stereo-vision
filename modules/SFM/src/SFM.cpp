@@ -26,32 +26,23 @@
 /******************************************************************************/
 bool SFM::configure(ResourceFinder &rf)
 {
-    string name=rf.check("name",Value("SFM")).asString().c_str();
-    string robot=rf.check("robot",Value("icub")).asString().c_str();
-    string left=rf.check("leftPort",Value("/left:i")).asString().c_str();
-    string right=rf.check("rightPort",Value("/right:i")).asString().c_str();
-    string SFMFile=rf.check("SFMFile",Value("SFM.ini")).asString().c_str();
+    string name=rf.check("name",Value("SFM")).asString();
+    string robot=rf.check("robot",Value("icub")).asString();
+    string left=rf.check("leftPort",Value("/left:i")).asString();
+    string right=rf.check("rightPort",Value("/right:i")).asString();
 
     string sname;
     sname="/"+name;
     left=sname+left;
     right=sname+right;
 
-    string outDispName=rf.check("outDispPort",Value("/disp:o")).asString().c_str();
-    string outMatchName=rf.check("outMatchPort",Value("/match:o")).asString().c_str();
+    string outDispName=rf.check("outDispPort",Value("/disp:o")).asString();
+    string outMatchName=rf.check("outMatchPort",Value("/match:o")).asString();
 
-    string outLeftRectImgPortName=rf.check("outLeftRectImgPort",Value("/rect_left:o")).asString().c_str();
-    string outRightRectImgPortName=rf.check("outRightRectImgPort",Value("/rect_right:o")).asString().c_str();
+    string outLeftRectImgPortName=rf.check("outLeftRectImgPort",Value("/rect_left:o")).asString();
+    string outRightRectImgPortName=rf.check("outRightRectImgPort",Value("/rect_right:o")).asString();
 
-    ResourceFinder localCalibration;
-    localCalibration.setContext("cameraCalibration");
-    localCalibration.setDefaultConfigFile(SFMFile.c_str());
-    localCalibration.configure(0,NULL);
-
-    camCalibFile=localCalibration.getHomeContextPath().c_str();
-    camCalibFile+="/"+SFMFile;
-
-    eyesCalibFile=localCalibration.getHomeContextPath().c_str();
+    eyesCalibFile=rf.getHomeContextPath();
     eyesCalibFile+="/calibrate-eyes.log";
 
     outMatchName=sname+outMatchName;
@@ -61,7 +52,7 @@ bool SFM::configure(ResourceFinder &rf)
     outRightRectImgPortName=sname+outRightRectImgPortName;
 
     string rpc_name=sname+"/rpc";
-    string world_name=sname+rf.check("outWorldPort",Value("/world")).asString().c_str();
+    string world_name=sname+rf.check("outWorldPort",Value("/world")).asString();
 
     int calib=rf.check("useCalibrated",Value(1)).asInt();
     bool useCalibrated=(calib!=0);
@@ -86,9 +77,6 @@ bool SFM::configure(ResourceFinder &rf)
     Mat KL, KR, DistL, DistR;
 
     loadIntrinsics(rf,KL,KR,DistL,DistR);
-    loadExtrinsics(localCalibration,R0,T0,eyes0);
-    eyes.resize(eyes0.length(),0.0);
-
     stereo->setIntrinsics(KL,KR,DistL,DistR);
 
     this->useBestDisp=true;
@@ -132,91 +120,27 @@ bool SFM::configure(ResourceFinder &rf)
     utils->initSIFT_GPU();
 #endif
 
-    Property optionHead;
-    optionHead.put("device","remote_controlboard");
-    optionHead.put("remote",("/"+robot+"/head").c_str());
-    optionHead.put("local",(sname+"/headClient").c_str());
-    if (headCtrl.open(optionHead))
-    {
-        headCtrl.view(iencs);
-        iencs->getAxes(&nHeadAxes);
-    }
-    else
-    {
-        cout<<"Devices not available"<<endl;
-        return false;
-    }
-
     Property optionGaze;
     optionGaze.put("device","gazecontrollerclient");
     optionGaze.put("remote","/iKinGazeCtrl");
-    optionGaze.put("local",(sname+"/gazeClient").c_str());
+    optionGaze.put("local",sname+"/gazeClient");
     if (gazeCtrl.open(optionGaze))
         gazeCtrl.view(igaze);
     else
     {
         cout<<"Devices not available"<<endl;
-        headCtrl.close();
         return false;
     }
 
-    if (!R0.empty() && !T0.empty())
-    {
-        stereo->setRotation(R0,0);
-        stereo->setTranslation(T0,0);
-    }
-    else
-    {
-        cout << "No local calibration file found in " <<  camCalibFile << " ... Using Kinematics and Running SFM once." << endl;
-        updateViaGazeCtrl(true);
-        R0=this->stereo->getRotation();
-        T0=this->stereo->getTranslation();
-    }
+    updateViaGazeCtrl();
 
     doSFM=false;
-    updateViaGazeCtrl(false);
-
     return true;
 }
 
 
 /******************************************************************************/
-void SFM::updateViaKinematics(const yarp::sig::Vector& deyes)
-{
-    double dpan=CTRL_DEG2RAD*deyes[1];
-    double dver=CTRL_DEG2RAD*deyes[2];
-
-    yarp::sig::Vector rot_l_pan(4,0.0);
-    rot_l_pan[1]=1.0;
-    rot_l_pan[3]=dpan+dver/2.0;
-    Matrix L1=axis2dcm(rot_l_pan);
-
-    yarp::sig::Vector rot_r_pan(4,0.0);
-    rot_r_pan[1]=1.0;
-    rot_r_pan[3]=dpan-dver/2.0;
-    Matrix R1=axis2dcm(rot_r_pan);
-
-    Mat RT0=buildRotTras(R0,T0);
-    Matrix H0; convert(RT0,H0);
-    Matrix H=SE3inv(R1)*H0*L1;
-
-    Mat R=Mat::zeros(3,3,CV_64F);
-    Mat T=Mat::zeros(3,1,CV_64F);
-
-    for (int i=0; i<R.rows; i++)
-        for(int j=0; j<R.cols; j++)
-            R.at<double>(i,j)=H(i,j);
-
-    for (int i=0; i<T.rows; i++)
-        T.at<double>(i,0)=H(i,3);
-
-    this->stereo->setRotation(R,0);
-    this->stereo->setTranslation(T,0);
-}
-
-
-/******************************************************************************/
-void SFM::updateViaGazeCtrl(const bool update)
+void SFM::updateViaGazeCtrl()
 {
     Matrix L1=getCameraHGazeCtrl(LEFT);
     Matrix R1=getCameraHGazeCtrl(RIGHT);
@@ -233,13 +157,9 @@ void SFM::updateViaGazeCtrl(const bool update)
     for (int i=0; i<T.rows; i++)
         T.at<double>(i,0)=RT(i,3);
 
-    if (update)
-    {
-        stereo->setRotation(R,0);
-        stereo->setTranslation(T,0);
-    }
-    else
-        stereo->setExpectedPosition(R,T);
+    stereo->setRotation(R,0);
+    stereo->setTranslation(T,0);
+    stereo->setExpectedPosition(R,T);
 }
 
 
@@ -278,7 +198,6 @@ bool SFM::close()
     outLeftRectImgPort.close();
     outRightRectImgPort.close();
 
-    headCtrl.close();
     gazeCtrl.close();
 
 #ifdef USING_GPU
@@ -304,13 +223,7 @@ bool SFM::updateModule()
     if ((yarp_imgL==NULL) || (yarp_imgR==NULL))
         return true;
 
-    // read encoders
-    iencs->getEncoder(nHeadAxes-3,&eyes[0]);
-    iencs->getEncoder(nHeadAxes-2,&eyes[1]);
-    iencs->getEncoder(nHeadAxes-1,&eyes[2]);
-
-    updateViaKinematics(eyes-eyes0);
-    updateViaGazeCtrl(false);
+    updateViaGazeCtrl();
 
     left=(IplImage*)yarp_imgL->getIplImage();
     right=(IplImage*)yarp_imgR->getIplImage();
@@ -319,12 +232,8 @@ bool SFM::updateModule()
     {
         output_match=cvCreateImage(cvSize(left->width*2,left->height),8,3);
         this->numberOfDisparities=(left->width<=320)?96:128;
-
         init=false;
     }
-
-    getCameraHGazeCtrl(LEFT);
-    getCameraHGazeCtrl(RIGHT);
 
     Mat leftMat=cvarrToMat(left);
     Mat rightMat=cvarrToMat(right);
@@ -333,16 +242,16 @@ bool SFM::updateModule()
     mutexRecalibration.lock();
     if (doSFM)
     {
-#ifdef USING_GPU
+    #ifdef USING_GPU
         utils->extractMatch_GPU(leftMat,rightMat);
         vector<Point2f> leftM,rightM;
         utils->getMatches(leftM,rightM);
         mutexDisp.lock();
         this->stereo->setMatches(leftM,rightM);
-#else
+    #else
         mutexDisp.lock();
         this->stereo->findMatch(false);
-#endif
+    #endif
         this->stereo->estimateEssential();
         bool ok=this->stereo->essentialDecomposition();
         mutexDisp.unlock();
@@ -370,13 +279,6 @@ bool SFM::updateModule()
             this->speckleRange,this->numberOfDisparities,this->SADWindowSize,
             this->minDisparity,this->preFilterCap,this->disp12MaxDiff);
     mutexDisp.unlock();
-
-    // DEBUG
-    /*int uR,vR;
-    Point3f point = this->get3DPointsAndDisp(160,120,uR,vR,"ROOT");
-    circle(leftMat,cvPoint(160,120),2,cvScalar(255,0,0),2);
-    circle(rightMat,cvPoint(uR,vR),2,cvScalar(0,255,0),2);
-     */
 
     if (outLeftRectImgPort.getOutputCount()>0)
     {
@@ -408,19 +310,6 @@ bool SFM::updateModule()
 
     if (outMatch.getOutputCount()>0)
     {
-        /*Mat F= this->stereo->getFundamental();
-
-        if(matchtmp.size()>0)
-        {
-            Mat m(matchtmp);
-            vector<Vec3f> lines;
-            cv::computeCorrespondEpilines(m,2,F,lines);
-            for (cv::vector<cv::Vec3f>::const_iterator it = lines.begin(); it!=lines.end(); ++it)
-            {
-                cv::line(matMatches, cv::Point(0,-(*it)[2]/(*it)[1]), cv::Point(left->width,-((*it)[2] + (*it)[0]*left->width)/(*it)[1]),cv::Scalar(0,0,255));
-            }        
-        }*/
-
         Mat matches=this->stereo->drawMatches();
         cvtColor(matches,matches,CV_BGR2RGB);
         ImageOf<PixelBgr>& imgMatch=outMatch.prepare();
@@ -444,7 +333,8 @@ bool SFM::updateModule()
                 cv_extend::bilateralFilter(outputDm,outputDfiltm, sigmaColorBLF, sigmaSpaceBLF);
                 IplImage outputDfilt = outputDfiltm;
                 outim.wrapIplImage(&outputDfilt);
-            } else
+            }
+            else
             {
                 IplImage outputD = outputDm;
                 outim.wrapIplImage(&outputD);
@@ -474,40 +364,6 @@ double SFM::getPeriod()
     // the updateModule() method gets synchronized
     // with camera input => no need for periodicity
     return 0.0;
-}
-
-
-/******************************************************************************/
-bool SFM::loadExtrinsics(yarp::os::ResourceFinder& rf, Mat& Ro, Mat& To, yarp::sig::Vector& eyes)
-{
-    Bottle extrinsics=rf.findGroup("STEREO_DISPARITY");
-
-    eyes.resize(3,0.0);
-    if (Bottle *bEyes=extrinsics.find("eyes").asList())
-    {
-        size_t sz=std::min(eyes.length(),(size_t)bEyes->size());
-        for (size_t i=0; i<sz; i++)
-            eyes[i]=bEyes->get(i).asDouble();
-    }
-
-    cout<<"read eyes configuration = ("<<eyes.toString(3,3).c_str()<<")"<<endl;
-
-    if (Bottle *pXo=extrinsics.find("HN").asList())
-    {
-        Ro=Mat::zeros(3,3,CV_64FC1);
-        To=Mat::zeros(3,1,CV_64FC1);
-        for (int i=0; i<(pXo->size()-4); i+=4)
-        {
-            Ro.at<double>(i/4,0)=pXo->get(i).asDouble();
-            Ro.at<double>(i/4,1)=pXo->get(i+1).asDouble();
-            Ro.at<double>(i/4,2)=pXo->get(i+2).asDouble();
-            To.at<double>(i/4,0)=pXo->get(i+3).asDouble();
-        }
-    }
-    else
-        return false;
-
-    return true;
 }
 
 
@@ -572,30 +428,6 @@ bool SFM::loadIntrinsics(yarp::os::ResourceFinder &rf, Mat &KL, Mat &KR, Mat &Di
     KR.at<double>(1,2)=cy;
 
     return true;
-}
-
-
-/******************************************************************************/
-bool SFM::updateExtrinsics(Mat& Rot, Mat& Tr, yarp::sig::Vector& eyes,
-                           const string& groupname)
-{
-    ofstream out;
-    out.open(camCalibFile.c_str());
-    if (out.is_open())
-    {
-        out << endl;
-        out << "["+groupname+"]" << endl;
-        out << "eyes (" << eyes.toString().c_str() << ")" << endl;
-        out << "HN (" << Rot.at<double>(0,0) << " " << Rot.at<double>(0,1) << " " << Rot.at<double>(0,2) << " " << Tr.at<double>(0,0) << " "
-                << Rot.at<double>(1,0) << " " << Rot.at<double>(1,1) << " " << Rot.at<double>(1,2) << " " << Tr.at<double>(1,0) << " "
-                << Rot.at<double>(2,0) << " " << Rot.at<double>(2,1) << " " << Rot.at<double>(2,2) << " " << Tr.at<double>(2,0) << " "
-                << 0.0                 << " " << 0.0                 << " " << 0.0                 << " " << 1.0                << ")"
-                << endl;
-        out.close();
-        return true;
-    }
-    else
-        return false;
 }
 
 
@@ -1008,7 +840,7 @@ bool SFM::pushExtrinsics(const string &eye, const Matrix &H)
 
 
 /******************************************************************************/
-bool SFM::calibrate()
+bool SFM::doSFMOnce()
 {
     mutexRecalibration.lock();
     numberOfTrials=0;
@@ -1018,20 +850,12 @@ bool SFM::calibrate()
     calibEndEvent.reset();
     calibEndEvent.wait();
 
-    if (calibUpdated)
-    {
-        R0=this->stereo->getRotation();
-        T0=this->stereo->getTranslation();
-        eyes0=eyes;
-        return true;
-    }
-    else
-        return false;
+    return calibUpdated;
 }
 
 
 /******************************************************************************/
-Vector SFM::calibrateEyes(const Bottle &options)
+Vector SFM::calibrate(const Bottle &options)
 {
     Bottle info;
     igaze->getInfo(info);
@@ -1058,24 +882,24 @@ Vector SFM::calibrateEyes(const Bottle &options)
     pushExtrinsics("left",eye(4,4));
     pushExtrinsics("right",eye(4,4));
 
-    IPositionControl *ipos;
-    headCtrl.view(ipos);
-    ipos->setRefSpeed(5,50.0);
+    int gaze_context;
+    igaze->storeContext(&gaze_context);
+    igaze->blockNeckPitch();
+    igaze->blockNeckRoll();
+    igaze->blockNeckYaw();
 
     yInfo()<<"Acquiring data...";
 
-    EyesCalibration calibrator;
-    for (double ver=verMin; ver<=verMax; ver+=verStep)
+    Vector ang;    
+    igaze->getAngles(ang);
+    double &ver=ang[2];
+
+    EyesCalibration calibrator;    
+    for (ver=verMin; ver<=verMax; ver+=verStep)
     {
         yInfo()<<"Going to vergence "<<ver<< " [deg]...";
-        ipos->positionMove(5,ver);
-        bool done=false;
-        while (!done)
-        {
-            Time::delay(1.0);
-            ipos->checkMotionDone(5,&done);
-            yInfo()<<"Checking target...";
-        }
+        igaze->lookAtAbsAngles(ang);
+        igaze->waitMotionDone(1.0);
         yInfo()<<"Target reached";
 
         int cntTot=1;
@@ -1084,7 +908,7 @@ Vector SFM::calibrateEyes(const Bottle &options)
         {
             yInfo()<<"Calibrating the stereo rig at vergence "
                    <<ver<<" [deg]; attempt #"<<cntTot;
-            if (calibrate())
+            if (doSFMOnce())
             {
                 yInfo()<<"Calibration achieved successfully";
                 CalibrationData &data=calibrator.addData();
@@ -1099,7 +923,8 @@ Vector SFM::calibrateEyes(const Bottle &options)
                 data.eye_kin_right=axis2dcm(o);
                 data.eye_kin_right.setSubcol(x,0,3);
 
-                Mat H0=buildRotTras(R0,T0);
+                Mat H0=buildRotTras(this->stereo->getRotation(),
+                                    this->stereo->getTranslation());
                 convert(H0,data.fundamental);
 
                 yInfo()<<"Packaging data...";
@@ -1123,13 +948,17 @@ Vector SFM::calibrateEyes(const Bottle &options)
         }
     }
 
-    yInfo()<<"Homing vergence to "<<verMin<< " [deg]";
-    ipos->positionMove(5,verMin);
+    ver=verMin;
+    yInfo()<<"Homing vergence to "<<ver<< " [deg]";    
+    igaze->lookAtAbsAngles(ang);
 
     yInfo()<<"Calibrating eyes...";
     Matrix extrinsics_left,extrinsics_right;
     Vector cost=calibrator.calibrate(extrinsics_left,extrinsics_right,eyesCalibFile);
     yInfo()<<"Final cost found: ["<<cost.toString(5,5)<<"]";
+
+    igaze->restoreContext(gaze_context);
+    igaze->deleteContext(gaze_context);
 
     yInfo()<<"Pushing new extrinsics to gaze";
     pushExtrinsics("left",extrinsics_left);
@@ -1153,13 +982,11 @@ bool SFM::respond(const Bottle& command, Bottle& reply)
         return false;
     }
 
-    if (cmd=="help") {
+    if (cmd=="help")
+    {
         reply.addVocab(Vocab::encode("many"));
         reply.addString("Available commands are:");
-        reply.addString("- [calibrate]: It recomputes the camera positions once.");
-        reply.addString("- [save]: It saves the current camera positions and uses it when the module starts.");
-        reply.addString("- [getH]: It returns the calibrated stereo matrix.");
-        reply.addString("- [calibrate-eyes step max]: It finds out extrinsics parameters of eyes kinematics. Optional values \"step\" and \"max\" specify range for the vergence exploration.");
+        reply.addString("- [calibrate step max]: It finds out extrinsics parameters of eyes kinematics. Optional values \"step\" and \"max\" specify range for the vergence exploration.");
         reply.addString("- [setNumDisp NumOfDisparities]: It sets the expected number of disparity (in pixel). Values must be divisible by 32. ");
         reply.addString("- [Point x y]: Given the pixel coordinate x,y in the Left image the response is the 3D Point: X Y Z computed using the depth map wrt the LEFT eye.");
         reply.addString("- [x y]: Given the pixel coordinate x,y in the Left image the response is the 3D Point: X Y Z ur vr computed using the depth map wrt the the ROOT reference system.(ur vr) is the corresponding pixel in the Right image. ");
@@ -1179,28 +1006,7 @@ bool SFM::respond(const Bottle& command, Bottle& reply)
 
     if (cmd=="calibrate")
     {
-        reply.addString(calibrate()?"ACK":"Calibration failed after 5 trials.. Please show a non planar scene.");
-        return true;
-    }
-    else if (cmd=="save")
-    {
-        updateExtrinsics(R0,T0,eyes0,"STEREO_DISPARITY");
-        reply.addString("ACK");
-        return true;
-    }
-    else if (cmd=="getH")
-    {
-        Mat H0=buildRotTras(R0,T0);
-
-        Matrix H;
-        convert(H0,H);
-        
-        reply.read(H);
-        return true;
-    }
-    else if (cmd=="calibrate-eyes")
-    {
-        Vector cost=calibrateEyes(command.tail());
+        Vector cost=calibrate(command.tail());
         reply.read(cost);
     }
     else if (cmd=="setNumDisp")
